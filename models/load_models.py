@@ -1,5 +1,6 @@
 import ultralytics
 
+
 def install_models()->None:
     pass
 
