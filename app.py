@@ -39,6 +39,9 @@ def display_image(image_path):
         dpg.add_text(f"Displaying: {os.path.basename(image_path)}")
         dpg.add_image(texture_tag, width=600, height=400)  # Resize image to fit the window
 
+    # Show the "Image Processing Options" window after displaying the image
+    dpg.show_item("image_processing_window")
+
 def process_image(image_path, denoise=False, sharpen=False):
     processed_dir = "PROCESSED_IMAGE"
     if not os.path.exists(processed_dir):
@@ -65,26 +68,49 @@ def process_image(image_path, denoise=False, sharpen=False):
     cv.imwrite(processed_image_path, processed_image)
     print(f"Processed image saved at: {processed_image_path}")
 
-    # Load the saved image for display
-    processed_image_rgb = cv.cvtColor(cv.imread(processed_image_path), cv.COLOR_BGR2RGB)
-    with dpg.texture_registry():
-        texture_tag = "processed_texture"
-        dpg.add_static_texture(processed_image_rgb.shape[1], processed_image_rgb.shape[0], processed_image_rgb.flatten() / 255.0, tag=texture_tag)
-
-    # Create a new window to display the processed image
-    with dpg.window(label="Processed Image", width=600, height=400):
-        dpg.add_text("Processed Image")
-        dpg.add_image(texture_tag)
-
-    # Ensure the application continues running
-    print("Image processing completed. Processed image displayed in a new window.")
+    # Remove display logic
+    print("Image processing completed. Processed image saved.")
+    return processed_image_path
 
 def submit_callback(sender, app_data):
     denoise = dpg.get_value("denoise_checkbox")
     sharpen = dpg.get_value("sharpen_checkbox")
     if os.listdir(UPLOAD_DIR):
         image_path = os.path.join(UPLOAD_DIR, os.listdir(UPLOAD_DIR)[0])
-        process_image(image_path, denoise=denoise, sharpen=sharpen)
+        processed_image_path = process_image(image_path, denoise=denoise, sharpen=sharpen)
+        dpg.set_value("status_text", "Image processed and saved.")
+        dpg.set_value("process_status_text", "Image processed and saved successfully.")  # Update process status
+
+        # List to store marker positions
+        markers = []
+
+        # Create a new window to display the processed image
+        with dpg.window(label="Processed Image Viewer", width=800, height=600, pos=(100, 100)):
+            dpg.add_text("Click on the image to set markers.")
+            width, height, channels, data = dpg.load_image(processed_image_path)  # Load processed image as texture
+            with dpg.texture_registry():
+                texture_tag = "processed_image_texture"
+                dpg.add_static_texture(width, height, data, tag=texture_tag)
+
+            # Add a drawlist for displaying the image
+            with dpg.drawlist(width=width, height=height, tag="overlay_layer"):
+                dpg.draw_image(texture_tag, pmin=(0, 0), pmax=(width, height))
+
+            # Add a mouse click handler for storing marker positions
+            def mouse_click_handler(sender, app_data):
+                mouse_pos = dpg.get_mouse_pos(local=False)
+                drawlist_pos = dpg.get_item_pos("overlay_layer")
+                x, y = mouse_pos[0] - drawlist_pos[0], mouse_pos[1] - drawlist_pos[1]
+                if 0 <= x <= width and 0 <= y <= height:  # Ensure click is within image bounds
+                    markers.append((int(x), int(y)))  # Store marker position
+                    dpg.add_text(f"Marker set at: ({int(x)}, {int(y)})", parent="marker_container")
+
+            dpg.add_handler_registry(tag="mouse_handler_registry")
+            dpg.add_mouse_click_handler(callback=mouse_click_handler, parent="mouse_handler_registry")
+
+            dpg.add_spacer(height=10)
+            with dpg.child_window(tag="marker_container", width=780, height=200):
+                dpg.add_text("Markers:")
     else:
         print("No image uploaded to process.")
 
@@ -97,10 +123,11 @@ with dpg.window(label="File Upload Window", width=400, height=200):
     dpg.add_spacer(height=10)
     dpg.add_text("", tag="status_text")  # status display
 
-with dpg.window(label="Image Processing Options", width=400, height=200, pos=(50, 300)):
+with dpg.window(label="Image Processing Options", width=400, height=200, pos=(50, 300), tag="image_processing_window", show=False):
     dpg.add_checkbox(label="Denoise", tag="denoise_checkbox")
     dpg.add_checkbox(label="Sharpen", tag="sharpen_checkbox")
     dpg.add_button(label="Submit", callback=submit_callback)
+    dpg.add_text("", tag="process_status_text")  # Text to display process status
 
 if __name__ == "__main__":
     dpg.setup_dearpygui()
