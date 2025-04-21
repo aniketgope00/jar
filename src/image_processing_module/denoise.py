@@ -2,28 +2,27 @@ import numpy as np
 import cv2
 from PIL import Image
 
-def denoise_image(image_path):
+def denoise_image(image):
     """
-    Denoises the image using Non-Local Means Denoising and saves the result.
+    Denoises the input image using Non-Local Means Denoising.
 
     Parameters:
-        image_path (str): Path to the input image.
-    """
-    # Read the image
-    image = cv2.imread(image_path)
+        image (PIL.Image.Image): Input image as a PIL Image object.
 
-    # Check if the image was loaded successfully
-    if image is None:
-        raise ValueError("Image not found or unable to load.")
+    Returns:
+        PIL.Image.Image: Denoised image as a PIL Image object.
+    """
+    # Convert PIL Image to NumPy array
+    image_array = np.array(image)
 
     # Apply Non-Local Means Denoising
-    denoised = cv2.fastNlMeansDenoisingColored(image, None, 10, 10, 7, 21)
+    denoised_array = cv2.fastNlMeansDenoisingColored(image_array, None, 10, 10, 7, 21)
 
-    return denoised
+    # Convert back to PIL Image
+    return Image.fromarray(denoised_array)
 
 if __name__ == "__main__":
     path = "truck.jpg"
-    denoised_image = denoise_image(path)
-    cv2.imshow("Denoised Image", denoised_image)
-    cv2.waitKey(1000)
-    cv2.destroyAllWindows()
+    image = Image.open(path)
+    denoised_image = denoise_image(image)
+    denoised_image.show()

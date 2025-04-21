@@ -2,41 +2,28 @@ import numpy as np
 import cv2
 from PIL import Image
 
-def sharpen_image(image_path):
+def sharpen_image(image):
     """
-    Sharpens the image using the Laplacian filter and saves the result.
+    Sharpens the input image using a kernel.
 
     Parameters:
-        image_path (str): Path to the input image.
+        image (PIL.Image.Image): Input image as a PIL Image object.
+
+    Returns:
+        PIL.Image.Image: Sharpened image as a PIL Image object.
     """
-    # Read the image
-    image = cv2.imread(image_path)
+    # Convert PIL Image to NumPy array
+    image_array = np.array(image)
 
-    # Check if the image was loaded successfully
-    if image is None:
-        raise ValueError("Image not found or unable to load.")
+    # Apply sharpening kernel
+    kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
+    sharpened_array = cv2.filter2D(image_array, -1, kernel)
 
-    # Split the image into its color channels
-    b, g, r = cv2.split(image)
-
-    # Apply Laplacian filter for sharpening on each channel
-    def sharpen_channel(channel):
-        laplacian = cv2.Laplacian(channel, cv2.CV_64F)
-        laplacian = np.uint8(np.absolute(laplacian))  # Convert to uint8
-        return cv2.addWeighted(channel, 1.5, laplacian, -0.5, 0)
-
-    sharpened_b = sharpen_channel(b)
-    sharpened_g = sharpen_channel(g)
-    sharpened_r = sharpen_channel(r)
-
-    # Merge the sharpened channels back into an RGB image
-    sharpened = cv2.merge((sharpened_b, sharpened_g, sharpened_r))
-
-    return sharpened
+    # Convert back to PIL Image
+    return Image.fromarray(sharpened_array)
 
 if __name__ == "__main__":
     path = "truck.jpg"
-    sharpened_image = sharpen_image(path)
-    cv2.imshow("Sharpened Image", sharpened_image)
-    cv2.waitKey(1000)
-    cv2.destroyAllWindows()
+    image = Image.open(path)
+    sharpened_image = sharpen_image(image)
+    sharpened_image.show()
