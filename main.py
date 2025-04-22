@@ -2,16 +2,19 @@ import sys
 import logging
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QGridLayout, QWidget,
-    QFileDialog, QLabel, QTabWidget, QVBoxLayout, QHBoxLayout, QCheckBox
+    QFileDialog, QLabel, QTabWidget, QVBoxLayout, QHBoxLayout, QCheckBox, QScrollArea
 )
 from PyQt5.QtGui import QPalette, QColor, QPixmap, QMovie, QMouseEvent, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QPoint
+
 import os
 import shutil
 import cv2
 import numpy as np
 from src.image_processing_module import preprocess
-#from src.segmentation_module.models import get_segmented_image  # Import the function
+from src.sam2_api import load_sam_model, segment_image  # Import SAM API functions
+from src.build_3D_mesh import generate_3d_models  # Import the 3D model generation function
+from src.view_models import show_ply_with_open3d, show_obj_with_open3d, show_glb  # Import visualization functions
 
 # Configure logging
 logging.basicConfig(
@@ -114,12 +117,12 @@ class MainWindow(QMainWindow):
         self.upload_button = QPushButton("Upload Image")
         self.upload_button.setObjectName("actionButton")
         self.upload_button.setFixedSize(*button_size)
-        self.upload_button.clicked.connect(self.upload_image)
+        self.upload_button.clicked.connect(self.on_upload_button_clicked)
 
         self.button1 = QPushButton("Create General Renders")
         self.button1.setObjectName("actionButton")
         self.button1.setFixedSize(*button_size)
-        self.button1.clicked.connect(self.switch_to_settings_tab)  # Link to switch tab
+        self.button1.clicked.connect(self.on_button1_clicked)
 
         button_layout.addWidget(self.upload_button)
         button_layout.addWidget(self.button1)
@@ -173,28 +176,35 @@ class MainWindow(QMainWindow):
         self.original_image_label.setStyleSheet("color: white; margin: 0px; padding: 0px;")  # Reduced padding/margin
         settings_layout.addWidget(self.original_image_label, 1, 0, 1, 2)
 
+        # Label for preprocessing steps
+        preprocessing_label = QLabel("Select Preprocessing Steps")
+        preprocessing_label.setStyleSheet("color: white; font-weight: bold; font-size: 16px;")
+        preprocessing_label.setAlignment(Qt.AlignCenter)
+        settings_layout.addWidget(preprocessing_label, 2, 0, 1, 2)
+
+        # Checkboxes for denoising and sharpening
+        self.denoise_checkbox = QCheckBox("Denoise")
+        self.denoise_checkbox.setStyleSheet("color: white; font-size: 14px;")
+        self.sharpen_checkbox = QCheckBox("Sharpen")
+        self.sharpen_checkbox.setStyleSheet("color: white; font-size: 14px;")
+
+        # Align checkboxes relative to the "Process Image" button
+        settings_layout.addWidget(self.denoise_checkbox, 3, 0, alignment=Qt.AlignCenter)
+        settings_layout.addWidget(self.sharpen_checkbox, 3, 1, alignment=Qt.AlignCenter)
+
+        # Process Image Button
+        self.process_button = QPushButton("Process Image")
+        self.process_button.setObjectName("evilButton")
+        self.process_button.setFixedSize(200, 40)  # Reduced button size
+        self.process_button.clicked.connect(self.on_process_button_clicked)
+        settings_layout.addWidget(self.process_button, 4, 0, 1, 2, alignment=Qt.AlignCenter)  # Center aligned
+
         # Enable mouse tracking for the original image label
         self.original_image_label.setMouseTracking(True)
         self.original_image_label.mousePressEvent = self.add_marker
 
         # List to store marker positions
         self.markers = []
-
-        # Checkboxes for denoising and sharpening
-        self.denoise_checkbox = QCheckBox("Denoise")
-        self.denoise_checkbox.setStyleSheet("color: white;")
-        settings_layout.addWidget(self.denoise_checkbox, 2, 0)
-
-        self.sharpen_checkbox = QCheckBox("Sharpen")
-        self.sharpen_checkbox.setStyleSheet("color: white;")
-        settings_layout.addWidget(self.sharpen_checkbox, 2, 1)
-
-        # Process Image Button
-        self.process_button = QPushButton("Process Image")
-        self.process_button.setObjectName("evilButton")
-        self.process_button.setFixedSize(200, 40)  # Reduced button size
-        self.process_button.clicked.connect(self.process_image)
-        settings_layout.addWidget(self.process_button, 3, 0, 1, 2, alignment=Qt.AlignCenter)  # Center aligned
 
         # Logs Tab
         logs_tab = QWidget()
@@ -266,6 +276,24 @@ class MainWindow(QMainWindow):
             logging.error(f"Failed to clear logs: {e}")
         event.accept()
 
+    def on_upload_button_clicked(self):
+        """Handle upload button click."""
+        logging.info("Upload button clicked.")
+        print("Upload button clicked.")
+        self.upload_image()
+
+    def on_button1_clicked(self):
+        """Handle 'Create General Renders' button click."""
+        logging.info("'Create General Renders' button clicked.")
+        print("'Create General Renders' button clicked.")
+        self.switch_to_settings_tab()
+
+    def on_process_button_clicked(self):
+        """Handle 'Process Image' button click."""
+        logging.info("'Process Image' button clicked.")
+        print("'Process Image' button clicked.")
+        self.process_image()
+
     def upload_image(self):
         file_dialog = QFileDialog()
         file_path, _ = file_dialog.getOpenFileName(self, "Upload Image", "", "Images (*.png *.jpg *.jpeg *.bmp)")
@@ -282,6 +310,8 @@ class MainWindow(QMainWindow):
             self.original_image_label.setPixmap(pixmap.scaled(400, 400, Qt.KeepAspectRatio))  # Update settings tab viewer
             self.uploaded_image_path = destination_path  # Store the uploaded image path
             logging.info(f"Uploaded image path stored: {self.uploaded_image_path}")
+        else:
+            logging.warning("No image selected for upload.")
 
     def general_renders(self):
         logging.info("General renders option clicked.")
@@ -301,6 +331,7 @@ class MainWindow(QMainWindow):
         if event.button() == Qt.LeftButton:
             # Limit the number of markers to 3
             if len(self.markers) >= 3:
+                logging.warning("Maximum of 3 markers allowed.")
                 print("Maximum of 3 markers allowed.")
                 return
 
@@ -354,7 +385,7 @@ class MainWindow(QMainWindow):
             logging.info("Image updated with markers.")
 
     def process_image(self):
-        """Process the uploaded image based on checkbox responses."""
+        """Process the uploaded image based on checkbox responses and generate segments."""
         if not hasattr(self, "uploaded_image_path") or not self.uploaded_image_path:
             logging.warning("No image uploaded to process.")
             self.image_label.setText("No image uploaded to process.")
@@ -377,73 +408,261 @@ class MainWindow(QMainWindow):
         processed_image.save(processed_image_path)  # Save as RGB
         logging.info(f"Processed image saved at: {processed_image_path}")
 
-        # Display original and processed images
-        self.display_images_side_by_side()
+        # Generate edge-detected images
+        from src.image_processing_module.edge_detection import (
+            canny_edge_detector,
+            sobel_edge_detector,
+            laplacian_edge_detector,
+        )
 
-    def display_images_side_by_side(self):
-        """Display the input image and the processed image side by side."""
+        try:
+            canny_image = canny_edge_detector(self.uploaded_image_path)
+            canny_image.save(os.path.join(processed_dir, "canny_edge.jpg"))
+
+            sobel_image = sobel_edge_detector(self.uploaded_image_path)
+            sobel_image.save(os.path.join(processed_dir, "sobel_edge.jpg"))
+
+            laplacian_image = laplacian_edge_detector(self.uploaded_image_path)
+            laplacian_image.save(os.path.join(processed_dir, "laplacian_edge.jpg"))
+        except Exception as e:
+            logging.error(f"Error generating edge-detected images: {e}")
+
+        # Generate segments using SAM API
+        segments_dir = "segments"
+        os.makedirs(segments_dir, exist_ok=True)
+        model = load_sam_model("sam2_s.pt")
+        if model is not None:
+            segment_image(model, processed_image_path, segments_dir)
+
+        # Display processed images and segments in the same tab
+        self.display_images_and_segments_tab(processed_dir, segments_dir)
+
+    def display_images_and_segments_tab(self, processed_dir, segments_dir):
+        """Display processed images and segmented images in the same tab with a scroll bar."""
         if not hasattr(self, "uploaded_image_path") or not self.uploaded_image_path:
             logging.warning("No image uploaded to display.")
             return
 
-        processed_dir = "PROCESSED_IMAGE"
-        processed_image_path = os.path.join(processed_dir, "processed_image.jpg")
-        if not os.path.exists(processed_image_path):
-            logging.warning("Processed image not found.")
+        logging.info("Displaying processed images and segmented images in a combined tab.")
+
+        # Create a new tab for processed images and segments
+        combined_tab = QWidget()
+        self.tab_widget.addTab(combined_tab, "Processed & Segmented Images")
+
+        # Scroll area for the tab
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_content = QWidget()
+        scroll_layout = QVBoxLayout(scroll_content)
+        scroll_area.setWidget(scroll_content)
+
+        # Add scroll area to the tab
+        layout = QVBoxLayout(combined_tab)
+        layout.addWidget(scroll_area)
+
+        # Processed images
+        processed_images = [
+            ("Original Image", self.uploaded_image_path),
+            ("Processed Image", os.path.join(processed_dir, "processed_image.jpg")),
+            ("Canny Edge Detection", os.path.join(processed_dir, "canny_edge.jpg")),
+            ("Sobel Edge Detection", os.path.join(processed_dir, "sobel_edge.jpg")),
+            ("Laplacian Edge Detection", os.path.join(processed_dir, "laplacian_edge.jpg")),
+        ]
+
+        # Add processed images to the layout
+        processed_label = QLabel("Processed Images")
+        processed_label.setAlignment(Qt.AlignCenter)
+        processed_label.setStyleSheet("color: white; font-size: 16px; font-weight: bold; margin-bottom: 10px;")
+        scroll_layout.addWidget(processed_label)
+
+        processed_grid = QGridLayout()
+        scroll_layout.addLayout(processed_grid)
+
+        row, col = 0, 0
+        for caption, image_path in processed_images:
+            if os.path.exists(image_path):
+                # Load image
+                pixmap = QPixmap(image_path)
+
+                # Image display
+                image_label = QLabel()
+                image_label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio))
+                image_label.setAlignment(Qt.AlignCenter)
+                image_label.setStyleSheet("border: 2px solid gray;")
+                processed_grid.addWidget(image_label, row, col)
+
+                # Caption
+                caption_label = QLabel(caption)
+                caption_label.setAlignment(Qt.AlignCenter)
+                caption_label.setStyleSheet("color: white; font-size: 12px;")
+                processed_grid.addWidget(caption_label, row + 1, col)
+
+                # Update row and column for grid placement
+                col += 1
+                if col > 2:  # 3 images per row
+                    col = 0
+                    row += 2
+
+        # Segmented images
+        segmented_label = QLabel("Segmented Images")
+        segmented_label.setAlignment(Qt.AlignCenter)
+        segmented_label.setStyleSheet("color: white; font-size: 16px; font-weight: bold; margin-top: 20px;")
+        scroll_layout.addWidget(segmented_label)
+
+        segmented_grid = QGridLayout()
+        scroll_layout.addLayout(segmented_grid)
+
+        row, col = 0, 0
+        self.selected_segment_path = None  # Store the selected segmented image path
+
+        def select_segment(image_path, image_label):
+            """Handle selection of a segmented image."""
+            self.selected_segment_path = image_path
+            logging.info(f"Selected segmented image: {image_path}")
+
+            # Highlight the selected image
+            for i in range(segmented_grid.count()):
+                widget = segmented_grid.itemAt(i).widget()
+                if isinstance(widget, QLabel):
+                    widget.setStyleSheet("border: 2px solid gray;")  # Reset border
+            image_label.setStyleSheet("border: 2px solid red;")  # Highlight selected image
+
+        segment_images = [
+            (f"Segment {i+1}", os.path.join(segments_dir, f"segment_{i+1}.png"))
+            for i in range(len(os.listdir(segments_dir)) - 1)  # Exclude composite.png
+        ]
+
+        for caption, image_path in segment_images:
+            if os.path.exists(image_path):
+                # Load image
+                pixmap = QPixmap(image_path)
+
+                # Image display
+                image_label = QLabel()
+                image_label.setPixmap(pixmap.scaled(200, 200, Qt.KeepAspectRatio))
+                image_label.setAlignment(Qt.AlignCenter)
+                image_label.setStyleSheet("border: 2px solid gray;")
+                image_label.mousePressEvent = lambda event, path=image_path, label=image_label: select_segment(path, label)
+                segmented_grid.addWidget(image_label, row, col)
+
+                # Caption
+                caption_label = QLabel(caption)
+                caption_label.setAlignment(Qt.AlignCenter)
+                caption_label.setStyleSheet("color: white; font-size: 12px;")
+                segmented_grid.addWidget(caption_label, row + 1, col)
+
+                # Update row and column for grid placement
+                col += 1
+                if col > 2:  # 3 images per row
+                    col = 0
+                    row += 2
+
+        # Add "Create 3D Model" button
+        create_3d_button = QPushButton("Create 3D Model")
+        create_3d_button.setObjectName("actionButton")
+        create_3d_button.setStyleSheet("background-color: #eb5e34; color: white; font-size: 14px; font-weight: bold;")
+        create_3d_button.clicked.connect(self.create_3d_model)
+        scroll_layout.addWidget(create_3d_button)
+
+        # Switch to the combined tab
+        self.tab_widget.setCurrentWidget(combined_tab)
+
+    def create_3d_model(self):
+        """Send the selected segmented image to the 3D model generation function."""
+        if not self.selected_segment_path:
+            logging.warning("No segmented image selected for 3D model generation.")
+            self.image_label.setText("Please select a segmented image first.")
             return
 
-        # Load images
-        input_pixmap = QPixmap(self.uploaded_image_path)
-        processed_image = QPixmap(processed_image_path)  # Load directly as RGB
-        processed_pixmap = processed_image
+        logging.info(f"Generating 3D model for: {self.selected_segment_path}")
+        generate_3d_models(self.selected_segment_path)
+        logging.info("3D model generation complete.")
 
-        # Create a new tab for comparison
-        comparison_tab = QWidget()
-        self.tab_widget.addTab(comparison_tab, "Comparison")
+        # Display the generated 3D models in a new tab
+        self.display_3d_models_tab()
 
-        # Layout for side-by-side display
+    def display_3d_models_tab(self):
+        """Display buttons to view the generated 3D models."""
+        generated_dir = "GENERATED_3D_MODELS"
+        if not os.path.exists(generated_dir):
+            logging.warning("No 3D models directory found.")
+            return
+
+        logging.info("Displaying 3D models in a new tab.")
+        model_tab = QWidget()
+        self.tab_widget.addTab(model_tab, "3D Models")
+
+        # Layout for the 3D models tab
         layout = QVBoxLayout()
-        comparison_tab.setLayout(layout)
+        model_tab.setLayout(layout)
 
-        # Horizontal layout for images
-        image_layout = QHBoxLayout()
+        # Add a label for the tab
+        header_label = QLabel("Generated 3D Models")
+        header_label.setAlignment(Qt.AlignCenter)
+        header_label.setStyleSheet("color: white; font-size: 18px; font-weight: bold; margin-bottom: 20px;")
+        layout.addWidget(header_label)
 
-        # Input image display
-        input_label = QLabel()
-        input_label.setPixmap(input_pixmap.scaled(400, 400, Qt.KeepAspectRatio))
-        input_label.setAlignment(Qt.AlignCenter)
-        input_label.setStyleSheet("border: 2px solid gray;")
-        image_layout.addWidget(input_label)
+        # Grid layout for models
+        grid_layout = QGridLayout()
+        layout.addLayout(grid_layout)
 
-        # Caption for input image
-        input_caption = QLabel("Original Image")
-        input_caption.setAlignment(Qt.AlignCenter)
-        input_caption.setStyleSheet("color: white; font-size: 12px;")
-        layout.addWidget(input_caption)
+        # Add buttons for each model type
+        model_files = {
+            "PLY File": os.path.join(generated_dir, "point_cloud.ply"),
+            "OBJ File": os.path.join(generated_dir, "mesh.obj"),
+            "GLB File": os.path.join(generated_dir, "mesh.glb"),
+        }
 
-        # Processed image display
-        processed_label = QLabel()
-        processed_label.setPixmap(processed_pixmap.scaled(400, 400, Qt.KeepAspectRatio))
-        processed_label.setAlignment(Qt.AlignCenter)
-        processed_label.setStyleSheet("border: 2px solid gray;")
-        image_layout.addWidget(processed_label)
+        row, col = 0, 0
+        for label, file_path in model_files.items():
+            if os.path.exists(file_path):
+                # Add a label for the file type
+                file_label = QLabel(f"{label}")
+                file_label.setAlignment(Qt.AlignCenter)
+                file_label.setStyleSheet("color: white; font-size: 14px; font-weight: bold; margin: 5px;")
+                grid_layout.addWidget(file_label, row, col)
 
-        # Caption for processed image
-        processed_caption = QLabel("Processed Image")
-        processed_caption.setAlignment(Qt.AlignCenter)
-        processed_caption.setStyleSheet("color: white; font-size: 12px;")
-        layout.addWidget(processed_caption)
+                # Add a button to view the file
+                view_button = QPushButton(f"View {label}")
+                view_button.setObjectName("actionButton")
+                view_button.setStyleSheet("""
+                    background-color: #eb5e34;
+                    border-style: outset;
+                    border-width: 2px;
+                    border-radius: 10px;
+                    border-color: beige;
+                    font: bold 14px;
+                    color: white;
+                    padding: 6px;
+                """)
+                view_button.clicked.connect(lambda _, path=file_path, lbl=label: self.view_3d_model(path, lbl))
+                grid_layout.addWidget(view_button, row + 1, col)
 
-        layout.addLayout(image_layout)
+                # Update row and column for grid placement
+                col += 1
+                if col > 2:  # 3 items per row
+                    col = 0
+                    row += 2
+            else:
+                logging.warning(f"{label} not found: {file_path}")
 
-        # Add "Open 3D Model" button
-        open_3d_model_button = QPushButton("Open 3D Model")
-        open_3d_model_button.setObjectName("actionButton")
-        open_3d_model_button.clicked.connect(self.open_3d_model_tab)
-        layout.addWidget(open_3d_model_button)
+        # Switch to the 3D models tab
+        self.tab_widget.setCurrentWidget(model_tab)
 
-        # Switch to the comparison tab
-        self.tab_widget.setCurrentWidget(comparison_tab)
+    def view_3d_model(self, file_path, label):
+        """Open and display the 3D model using the appropriate viewer."""
+        logging.info(f"Viewing {label}: {file_path}")
+        try:
+            if file_path.endswith(".ply"):
+                show_ply_with_open3d(file_path)
+            elif file_path.endswith(".obj"):
+                show_obj_with_open3d(file_path)
+            elif file_path.endswith(".glb"):
+                show_glb(file_path)
+            else:
+                logging.warning(f"Unsupported file format: {file_path}")
+        except Exception as e:
+            logging.error(f"Error viewing {label}: {e}")
 
     def refresh_logs(self):
         """Load and display the contents of the log file."""
@@ -458,6 +677,7 @@ class MainWindow(QMainWindow):
 
     def open_3d_model_tab(self):
         """Open a new tab and display the text 'See 3D model here'."""
+        logging.info("Opening 3D model tab.")
         model_tab = QWidget()
         self.tab_widget.addTab(model_tab, "3D Model")
 
@@ -480,3 +700,5 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
+
+
